@@ -1,0 +1,200 @@
+# Makefile.toml for building Patina EFI applications
+# This file uses cargo-make to build specific packages as EFI applications
+
+[config]
+default_to_workspace = false
+skip_core_tasks = true
+
+[env]
+# Default values
+CARGO_MAKE_RUST_TARGET_ARCH = { value = "x86_64", condition = { env_not_set = ["CARGO_MAKE_RUST_TARGET_ARCH"] } }
+PACKAGE_NAME = { value = "services_benchmark_test", condition = { env_not_set = ["PACKAGE_NAME"] } }
+BUILD_MODE = { value = "release", condition = { env_not_set = ["BUILD_MODE"] } }
+
+# Target configuration based on architecture  
+UEFI_TARGET_X64 = "x86_64-unknown-uefi"
+UEFI_TARGET_ARM64 = "aarch64-unknown-uefi"
+UEFI_TARGET = "x86_64-unknown-uefi"
+
+# Output paths
+TARGET_DIR = "target"
+EFI_DIR = "${TARGET_DIR}/${UEFI_TARGET}/${BUILD_MODE}"
+OUTPUT_DIR = "${TARGET_DIR}/efi"
+
+[tasks.default]
+alias = "build-efi"
+
+# Clean task
+[tasks.clean]
+description = "Clean build artifacts"
+command = "cargo"
+args = ["clean"]
+
+# Setup task
+[tasks.setup]
+description = "Setup toolchain and targets"
+script = [
+    "rustup target add x86_64-unknown-uefi",
+    "rustup target add aarch64-unknown-uefi"
+]
+
+# Build library
+[tasks.build-lib]
+description = "Build the library for UEFI target"
+command = "cargo"
+args = ["build", "--lib", "-p", "${PACKAGE_NAME}", "--target", "${UEFI_TARGET}"]
+dependencies = ["setup"]
+
+# Build library in release mode
+[tasks.build-lib-release]
+description = "Build the library for UEFI target in release mode"
+command = "cargo"
+args = ["build", "--lib", "-p", "${PACKAGE_NAME}", "--target", "${UEFI_TARGET}", "--release"]
+dependencies = ["setup"]
+
+# Build binary
+[tasks.build-bin]
+description = "Build the binary for UEFI target"
+command = "cargo"
+args = ["build", "--bin", "${PACKAGE_NAME}", "-p", "${PACKAGE_NAME}", "--target", "${UEFI_TARGET}"]
+dependencies = ["setup"]
+
+# Build binary in release mode
+[tasks.build-bin-release]
+description = "Build the binary for UEFI target in release mode"
+command = "cargo"
+args = ["build", "--bin", "${PACKAGE_NAME}", "-p", "${PACKAGE_NAME}", "--target", "${UEFI_TARGET}", "--release"]
+dependencies = ["setup"]
+
+# Build EFI application
+[tasks.build-efi]
+description = "Build EFI application for specified package (release mode)"
+dependencies = ["build-bin-release", "copy-efi-release"]
+
+# Create output directory
+[tasks.create-output-dir]
+description = "Create EFI output directory"
+script_runner = "@duckscript"
+script = '''
+mkdir ${TARGET_DIR}/efi
+'''
+
+# Copy EFI file (release)
+[tasks.copy-efi-release]
+description = "Copy release EFI executable to output directory"
+script_runner = "@duckscript"
+script = '''
+echo "Copying release EFI executable..."
+cp target/${UEFI_TARGET}/release/${PACKAGE_NAME}.efi target/efi/${PACKAGE_NAME}.efi
+echo "EFI application built: target/efi/${PACKAGE_NAME}.efi"
+'''
+dependencies = ["create-output-dir"]
+
+# Copy EFI file (debug)
+[tasks.copy-efi-debug]
+description = "Copy debug EFI executable to output directory"
+script_runner = "@duckscript"
+script = '''
+echo "Copying debug EFI executable..."
+cp target/${UEFI_TARGET}/debug/${PACKAGE_NAME}.efi target/efi/${PACKAGE_NAME}_debug.efi
+echo "Debug EFI application built: target/efi/${PACKAGE_NAME}_debug.efi"
+'''
+dependencies = ["create-output-dir"]
+
+# Build specific package with custom name
+[tasks.build-package]
+description = "Build a specific package as EFI application"
+script_runner = "@duckscript"
+script = '''
+if is_empty ${PACKAGE}
+    echo "Error: PACKAGE environment variable must be set"
+    echo "Usage: cargo make build-package --env PACKAGE=package_name"
+    exit 1
+end
+
+set_env PACKAGE_NAME ${PACKAGE}
+cm_run_task build-efi
+'''
+
+# Build for x86_64 architecture
+[tasks.build-x64]
+description = "Build EFI application for x86_64"
+env = { CARGO_MAKE_RUST_TARGET_ARCH = "x86_64", UEFI_TARGET = "x86_64-unknown-uefi" }
+run_task = "build-efi"
+
+# Build for aarch64 architecture  
+[tasks.build-arm64]
+description = "Build EFI application for aarch64"
+env = { CARGO_MAKE_RUST_TARGET_ARCH = "aarch64", UEFI_TARGET = "aarch64-unknown-uefi" }
+run_task = "build-efi"
+
+# Build for both architectures
+[tasks.build]
+description = "Build EFI application for all supported architectures"
+dependencies = ["build-x64", "build-arm64"]
+
+# Development build
+[tasks.build-debug]
+description = "Build EFI application in debug mode"
+dependencies = ["build-bin", "copy-efi-debug"]
+
+[tasks.test]
+description = "Run tests and collect coverage data without generating reports."
+install_crate = false
+clear = true
+command = "cargo"
+args = ["llvm-cov", "--no-report"]
+
+# Clippy linting
+[tasks.clippy]
+description = "Run cargo clippy."
+clear = true
+command = "cargo"
+args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+# Format code
+[tasks.fmt]
+description = "Format code"
+command = "cargo"
+args = ["fmt", "-p", "${PACKAGE_NAME}"]
+
+# Check code
+[tasks.check]
+description = "Check code for the package"
+command = "cargo"
+args = ["check", "-p", "${PACKAGE_NAME}", "--target", "${UEFI_TARGET}"]
+dependencies = ["setup"]
+
+# Full CI pipeline
+[tasks.ci]
+description = "Run full CI pipeline"
+dependencies = ["fmt", "clippy", "test", "build-efi"]
+
+[tasks.deny]
+description = "Run cargo deny."
+install_crate = false
+clear = true
+command = "cargo"
+args = ["deny", "check"]
+
+[tasks.coverage]
+description = "Generate an LCOV coverage report from collected data."
+install_crate = false
+clear = true
+command = "cargo"
+args = ["llvm-cov", "report", "--lcov", "--output-path", "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target/lcov.info"]
+dependencies = ["test"]
+
+[tasks.doc]
+env = { RUSTDOCFLAGS = "-D warnings" }
+description = "Builds all rust documentation in the workspace. Example `cargo make doc`"
+command = "cargo"
+args = ["doc", "@@split(INDIVIDUAL_PACKAGE_TARGETS, )", "--open"]
+
+[tasks.cspell]
+description = "Run cspell for spell checking."                                                                                                                                     # npm install -g cspell@latest
+script = "cspell --quiet  --no-progress --no-summary  --dot --gitignore -e \"{.git/**,.github/**,.vscode/**,.azurepipelines/**}\" ."
+
+[tasks.all]
+description = "Run all tasks for PR readiness."
+dependencies = ["deny", "clippy", "cspell", "build", "test", "coverage", "fmt", "doc"]
